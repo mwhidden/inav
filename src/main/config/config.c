@@ -37,6 +37,8 @@
 #include "drivers/timer.h"
 #include "drivers/pwm_rx.h"
 #include "drivers/rx_spi.h"
+#include "drivers/pwm_output.h"
+#include "drivers/rx_nrf24l01.h"
 #include "drivers/serial.h"
 
 #include "sensors/sensors.h"
@@ -476,8 +478,10 @@ static void resetConf(void)
     resetFlight3DConfig(&masterConfig.flight3DConfig);
 
 #ifdef BRUSHED_MOTORS
+    masterConfig.motor_pwm_protocol = PWM_TYPE_BRUSHED;
     masterConfig.motor_pwm_rate = BRUSHED_MOTORS_PWM_RATE;
 #else
+    masterConfig.motor_pwm_protocol = PWM_TYPE_CONVENTIONAL;
     masterConfig.motor_pwm_rate = BRUSHLESS_MOTORS_PWM_RATE;
 #endif
     masterConfig.servo_pwm_rate = 50;
@@ -591,7 +595,6 @@ static void resetConf(void)
     masterConfig.rxConfig.rcmap[6] = 6;
     masterConfig.rxConfig.rcmap[7] = 7;
 
-    featureSet(FEATURE_ONESHOT125);
     featureSet(FEATURE_VBAT);
     featureSet(FEATURE_LED_STRIP);
     featureSet(FEATURE_FAILSAFE);
@@ -745,6 +748,9 @@ void activateConfig(void)
 
 void validateAndFixConfig(void)
 {
+    // Disable unused features
+    featureClear(FEATURE_UNUSED_1 | FEATURE_UNUSED_2);
+
     if (!(featureConfigured(FEATURE_RX_PARALLEL_PWM) || featureConfigured(FEATURE_RX_PPM) || featureConfigured(FEATURE_RX_SERIAL) || featureConfigured(FEATURE_RX_MSP) || featureConfigured(FEATURE_RX_SPI))) {
         featureSet(DEFAULT_RX_FEATURE);
     }
@@ -779,12 +785,8 @@ void validateAndFixConfig(void)
         // which is only possible when using brushless motors w/o oneshot (timer tick rate is PWM_TIMER_MHZ)
 
         // On CC3D OneShot is incompatible with PWM RX
-        featureClear(FEATURE_ONESHOT125);
-
-        // Brushed motors on CC3D are not possible when using PWM RX
-        if (masterConfig.motor_pwm_rate > BRUSHLESS_MOTORS_PWM_RATE) {
-            masterConfig.motor_pwm_rate = BRUSHLESS_MOTORS_PWM_RATE;
-        }
+        masterConfig.motor_pwm_protocol = PWM_TYPE_CONVENTIONAL;
+        masterConfig.motor_pwm_rate = BRUSHLESS_MOTORS_PWM_RATE;
 #endif
 #endif
 
@@ -905,13 +907,19 @@ void validateAndFixConfig(void)
     /*
      * If provided predefined mixer setup is disabled, fallback to default one
      */
-     if (!isMixerEnabled(masterConfig.mixerMode)) {
-         masterConfig.mixerMode = DEFAULT_MIXER;
-     }
+    if (!isMixerEnabled(masterConfig.mixerMode)) {
+        masterConfig.mixerMode = DEFAULT_MIXER;
+    }
+
 #if defined(NAV)
     // Ensure sane values of navConfig settings
     validateNavConfig(&masterConfig.navConfig);
 #endif
+
+    /* Avoid timer pre-devisor overflow when selecting Multishot protocol */
+    if (masterConfig.motor_pwm_protocol == PWM_TYPE_MULTISHOT && masterConfig.motor_pwm_rate < 2000) {
+        masterConfig.motor_pwm_rate = 2000;
+    }
 }
 
 void applyAndSaveBoardAlignmentDelta(int16_t roll, int16_t pitch)
@@ -965,17 +973,6 @@ void changeControlRateProfile(uint8_t profileIndex)
     }
     setControlRateProfile(profileIndex);
     activateControlRateConfig();
-}
-
-void handleOneshotFeatureChangeOnRestart(void)
-{
-    // Shutdown PWM on all motors prior to soft restart
-    StopPwmAllMotors();
-    delay(50);
-    // Apply additional delay when OneShot125 feature changed from on to off state
-    if (feature(FEATURE_ONESHOT125) && !featureConfigured(FEATURE_ONESHOT125)) {
-        delay(ONESHOT_FEATURE_CHANGED_DELAY_ON_BOOT_MS);
-    }
 }
 
 void persistentFlagClearAll()
