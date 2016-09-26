@@ -631,7 +631,7 @@ int main(void)
         rescheduleTask(TASK_ACC, getAccUpdateRate());
         setTaskEnabled(TASK_ACC, true);
 
-        rescheduleTask(TASK_ATTI, getAttiUpdateRate());
+        rescheduleTask(TASK_ATTI, getAttitudeUpdateRate());
         setTaskEnabled(TASK_ATTI, true);
     }
 
